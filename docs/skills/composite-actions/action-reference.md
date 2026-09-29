@@ -260,6 +260,14 @@ Key design decisions:
 - Existing OCI labels (`containers.bootc=1`, etc.) are passed to chunkah as a JSON file rather than on argv, to avoid E2BIG on large base images. The file is created with `sudo mktemp` in `/var/tmp` so root owns it — see the workarounds table below and `docs/skills/composite-actions.md` → Known workarounds.
 - Mandatory cleanup flags (`--prune /sysroot/ --label ostree.commit- --label ostree.final-diffid-`) strip stale OSTree annotations and are hardcoded — they are correctness requirements, not tuning knobs.
 - `output-image` defaults to `source-image` (in-place rechunk).
+- `source-date-epoch` is forwarded to chunkah as `--source-date-epoch` and defaults to `auto`,
+  which resolves the committer timestamp of the checked-out source (`$GITHUB_WORKSPACE`). It is
+  not cosmetic — chunkah derives the default mtime clamp *and* every component stability score
+  from it, and stability decides the packing bins and the final layer order. Accepts `auto`,
+  digits, or empty (empty leaves chunkah on its own default and forfeits reproducibility);
+  anything else fails the action, because the value is interpolated into a shell line by the
+  vendored `Containerfile.splitter`. Consumers whose image is not built from the checked-out tree
+  should pass an explicit timestamp. See `docs/skills/determinism.md`.
 - `force-compression` input is optional and defaults to `false` (preserves existing compression). Use `true` for images that must migrate from existing registry compression (e.g. CentOS Stream bases transitioning from gzip to zstd:chunked).
 - v0.6.0 uses `--output oci:/run/src/out` + `FROM oci:out` (avoids tar/untar round-trip). v0.5.0 used `> /run/src/out.ociarchive` + `FROM oci-archive:out.ociarchive`. Consumer repos must NOT vendor their own Containerfile.splitter.
 

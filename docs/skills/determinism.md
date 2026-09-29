@@ -116,7 +116,8 @@ A CI check enforces they match. This ensures:
 **Why acceptable:**
 - BTRFS initialization is stable and repeatable on the same runner
 - The compressed filesystem is transparent to the build
-- Layer ordering inside a built image is deterministic (controlled by build tool)
+- Layer ordering inside a rechunked image is pinned by the chunkah build clock
+  (see "Chunkah build clock" below) — storage layout itself does not affect it
 
 **Mitigation:**
 - Use `compress-force=zstd:2` to ensure consistent compression
@@ -160,39 +161,84 @@ gh release view v6.0.3 --repo actions/checkout --json tagName
 - Enforced by `dakota/.github/actions/check-bst2-pin/` consistency check
 - Pinned in both Justfile and workflow — CI blocks drift
 
+### 2. Chunkah build clock (`--source-date-epoch`)
+
+**Pattern:** `bootc-build/chunka` takes a `source-date-epoch` input and forwards it to chunkah as
+`--source-date-epoch`. Its default is `auto`, which resolves the committer timestamp of the
+checked-out source (`git log -1 --format=%ct HEAD` in `$GITHUB_WORKSPACE`), so every caller —
+including `reusable-build.yml` — gets a pinned clock without wiring anything.
+
+**Why it matters — the epoch is not cosmetic.** chunkah resolves a single "now" (explicit
+`--source-date-epoch`, else `SOURCE_DATE_EPOCH`, else the `Created` field of the config it is
+given, else the wall clock) and uses it for three separate things:
+
+1. the image `created` timestamp,
+2. the default mtime clamp, applied as `min(file mtime, epoch)` to every file whose component
+   has no reproducible clamp (xattr-claimed files, unclaimed files, big files) — RPM components
+   use the rpmdb build time and are unaffected,
+3. the `now` argument to `calculate_stability()` for every component.
+
+(3) is the one that bites. Stability drives the tier thresholds (mean ± stddev), the packing
+bins, and the final `sort_by_stability_desc`. On a wall clock, two builds of identical content
+minutes apart can score the same components differently, re-bin them, and emit **the same layer
+blobs in a different order**. Content-addressed blobs mean nobody re-downloads anything, but the
+manifest changes, so the image digest changes for a build that changed nothing.
+
+**Rules:**
+- Never let chunkah reach the wall clock in a build that is expected to be reproducible. The
+  fallback is the source image's `Created` field, which for a freshly built base image is itself
+  a build timestamp — no better than the wall clock.
+- The epoch is a clamp, not a stamp: it may safely be older than the files being written.
+- Accept `auto`, digits, or empty. Anything else fails the action before chunkah runs, because the
+  buildah path splices the value into the `CHUNKAH_ARGS` build arg that the vendored
+  `Containerfile.splitter` interpolates into a shell line.
+- `auto` outside a git checkout warns and builds unpinned rather than failing the build. Treat
+  that warning as a broken checkout, not as a normal outcome.
+- Consumers whose image is *not* built from the checked-out tree (a pinned base, a rebased
+  Containerfile) should pass an explicit timestamp instead of relying on `auto`.
+
+**How to verify:**
+```bash
+# Same commit, two builds: the digests and the layer lists must match.
+skopeo inspect --raw "docker://<registry>/<image>@<digest-a>" | jq -S '.layers[].digest'
+skopeo inspect --raw "docker://<registry>/<image>@<digest-b>" | jq -S '.layers[].digest'
+```
+If the sorted digest lists match but the order differs, the build clock is not pinned — look for
+`chunkah pinned to SOURCE_DATE_EPOCH=` in the chunka step log, or for the `auto` warning.
+
 ---
 
 ## Open Investigations
 
-### 1. Chunkah reproducibility
+### 1. Chunkah reproducibility beyond the build clock
 
-**Question:** Does chunkah produce identical rechunked images from identical inputs?
+**Question:** With `--source-date-epoch` pinned, is a rechunked image byte-identical across
+builds of the same commit?
 
-**Context:**
-- Chunkah is an external tool (coreos/chunkah, container-based)
-- Layer ordering is stable
-- OCI layer digests are checked (line 55 in chunka/action.yml: `ostree.components` annotations)
-- Test suite: rechunk step in reusable workflow verifies metadata preserved (lines 418–432)
+**Already closed:** the build clock. The wall clock was the *only* `now` chunkah used, and it fed
+the stability scores that decide packing and layer order. See "Chunkah build clock" above.
 
-**Current mitigation:**
-- Full SHA pin on container image
-- Verify annotations preserved in reusable workflow
-- Layer digests logged for debugging
+**Still open:** the source image reaching chunkah must itself be reproducible. Differences in the
+base image — package versions picked up by a rebuild, tar header mtimes written by the build —
+change layer content, which no amount of epoch pinning can undo. Two builds of the same commit on
+different days legitimately produce different digests when package versions moved.
 
-**Next steps:**
-- Compare digests of rechunked images across two identical builds (same source, same runner pool)
-- If drift detected, file issue on coreos/chunkah with reproducible case
+**How to check:** build the same commit twice within a short window (so package versions match),
+compare manifests, and classify every difference: same blobs in a different order is a build-clock
+regression, different blobs are a content difference.
 
-**Status:** 🟡 Assumption of determinism, not yet verified empirically
+**Status:** 🟡 Build clock pinned; source-image reproducibility tracked in the consumer repos
 
 ### 2. SOURCE_DATE_EPOCH in Containerfile builds
 
 **Question:** Are Containerfile builds using SOURCE_DATE_EPOCH to pin timestamps?
 
 **Analysis:**
-- Neither bluefin nor dakota sets `SOURCE_DATE_EPOCH` in Containerfiles or Justfiles
-- Podman respects it if set in the runner environment, but it is not set
-- Timestamps (e.g., file mtimes inside built images) may vary between runs
+- The chunkah side is pinned: `bootc-build/chunka` defaults `source-date-epoch` to `auto` and
+  forwards it as `--source-date-epoch` (see "Chunkah build clock")
+- Neither bluefin nor dakota sets `SOURCE_DATE_EPOCH` in Containerfiles or Justfiles for the
+  *base image* build, so the layers chunkah later repacks can still carry build-time mtimes
+- Podman/buildah respect the variable when it is set in the runner environment
 
 **Impact:**
 - Minimal for bootc images (timestamps in /etc are not part of runtime state)
@@ -205,10 +251,10 @@ gh release view v6.0.3 --repo actions/checkout --json tagName
 
 **Next steps:**
 1. Verify that OSTree commit hashes are deterministic (not timestamp-dependent)
-2. If needed, set `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)` in build steps
-3. Pin in consuming repos if cross-repo reproducibility is required
+2. For cross-repo reproducible base images, set `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)` in
+   the consumer's base-image build (Justfile/Containerfile), not only in the rechunk step
 
-**Status:** 🟡 Not yet set; investigate if needed for reproducibility requirement
+**Status:** 🟡 Rechunk step pinned; base-image build still on the wall clock
 
 ### 3. AT-SPI test flakes in e2e testing
 
@@ -238,6 +284,7 @@ gh release view v6.0.3 --repo actions/checkout --json tagName
 |------|---------|-------|
 | Third-party action SHA updates | Monthly (via Renovate PR review) | @castrojo |
 | Chunkah reproducibility test | Quarterly | Agent-run (reproducibility CI) |
+| Chunkah build clock pin | Per chunkah bump | Agent-run (unit tests guard the wiring) |
 | SOURCE_DATE_EPOCH decision | Next design review | Architecture review |
 | AT-SPI test flake analysis | As-needed (PR blocking) | Whoever hits it in CI |
 
