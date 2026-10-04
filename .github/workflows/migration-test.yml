@@ -40,6 +40,10 @@ name: bootc Migration Test — ublue-os → projectbluefin
 #   - unified storage rollback lane
 #   - zstd:chunked lane (opt-in via chunked_enabled)
 # See: https://github.com/projectbluefin/testsuite/blob/main/tests/lifecycle/features/migration.feature
+#
+# The pinned e2e.yml@c664e15 enables `compose_image: true` by default, so this
+# workflow builds and pushes a derived ghcr.io/<owner>/testsuite-e2e:run-<id>
+# layer before booting. packages: write below is required for that push.
 
 on:
   workflow_dispatch:
@@ -97,7 +101,7 @@ permissions:
 jobs:
   migration-test:
     name: Migration — ${{ inputs.source_image }}
-    uses: projectbluefin/testsuite/.github/workflows/e2e.yml@c664e15e98f84163ad8adf936a75cc2fd054d707 # v1 (includes migration-target + extra-tags inputs, PR #311; ghcr.io/ prefix fix, PR #412; testsuite tag — reusable-execute-release.yml still pins db97ea65 until #600 merges)
+    uses: projectbluefin/testsuite/.github/workflows/e2e.yml@c664e15e98f84163ad8adf936a75cc2fd054d707 # v1
     permissions:
       contents: read
       packages: write

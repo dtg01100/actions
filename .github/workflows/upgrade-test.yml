@@ -22,6 +22,10 @@ name: bootc Upgrade and Rollback Test
 # changes tracked in:
 #   https://github.com/projectbluefin/testsuite/issues/223  (target-image input)
 #   https://github.com/projectbluefin/testsuite/issues/222  (no-op upgrade guard)
+#
+# The pinned e2e.yml@c664e15 enables `compose_image: true` by default, so this
+# workflow builds and pushes a derived ghcr.io/<owner>/testsuite-e2e:run-<id>
+# layer before booting. packages: write above is required for that push.
 
 on:
   workflow_dispatch:
@@ -82,7 +86,7 @@ permissions: {}
 jobs:
   upgrade-test:
     name: Upgrade & rollback — ${{ inputs.image }}
-    uses: projectbluefin/testsuite/.github/workflows/e2e.yml@c664e15e98f84163ad8adf936a75cc2fd054d707 # v1 (testsuite tag; reusable-execute-release.yml still pins db97ea65 until #600 merges)
+    uses: projectbluefin/testsuite/.github/workflows/e2e.yml@c664e15e98f84163ad8adf936a75cc2fd054d707 # v1
     permissions:
       contents: read
       packages: write
