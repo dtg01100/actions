@@ -376,21 +376,24 @@ Promotes one or more OCI variants (e.g. `:testing` → `:stable`) for bootc imag
 
 ### Testsuite e2e pin — keep aligned with bluefin's `run-testsuite.yml`
 
-The `release-gate` job calls `projectbluefin/testsuite/.github/workflows/e2e.yml@<SHA> # v1`. bluefin's `run-testsuite.yml` does **not** pin a SHA — it calls the same workflow with the floating `e2e.yml@v1` managed tag. This repo's pin must therefore match the SHA that bluefin's `@v1` tag currently resolves to. The two workflows execute the same testsuite e2e code — bluefin at PR time, the release gate at promotion time. A drift between them means the gate and bluefin CI can disagree on the same image.
+The `release-gate` job calls `projectbluefin/testsuite/.github/workflows/e2e.yml@<SHA> # v1`. This SHA **must match the SHA `projectbluefin/bluefin/.github/workflows/run-testsuite.yml` resolves at promotion time.** The two workflows execute the same testsuite e2e code — bluefin at PR time, the release gate at promotion time. A drift between them means the gate and bluefin CI can disagree on the same image.
+
+`bluefin/.github/workflows/run-testsuite.yml` calls `e2e.yml@v1` (a floating tag), not a SHA pin, so the file itself never carries the SHA — there is nothing to grep out of `run-testsuite.yml`. The real alignment check is between this repo's SHA pin and the SHA testsuite's `v1` tag points at right now: bluefin will exercise that SHA in the next PR run, and the release gate exercises it at promotion time. The pin is the SHA the gate actually executes and must be a deliberate, verified match against the live `v1` tag.
 
 To verify alignment before merging a change to this workflow, resolve bluefin's `@v1` tag to the SHA it points at and confirm the in-repo pins match that SHA:
 
 ```bash
-# The pins in this repo (release gate, migration-test, upgrade-test) — all must be one SHA:
-grep -n 'testsuite.*e2e.yml@' .github/workflows/*.yml
+# The SHA bluefin's @v1 resolves to right now (the PR-time alignment source of truth):
+gh api repos/projectbluefin/testsuite/git/refs/tags/v1 --jq .object.sha
 
-# What bluefin's floating @v1 tag actually resolves to (the source of truth).
-# Lightweight tag: one `refs/tags/v1` line with the commit SHA.
-# Annotated tag: also prints `refs/tags/v1^{}` — use that peeled commit SHA.
-git ls-remote --tags https://github.com/projectbluefin/testsuite 'v1*'
+# Sanity: every in-repo pin must be that SHA. A non-match means testsuite
+# advanced v1 since this repo last bumped the pin, or this repo drifted.
+[ "$(gh api repos/projectbluefin/testsuite/git/refs/tags/v1 --jq .object.sha)" = \
+  "$(grep -h 'testsuite.*e2e.yml@' .github/workflows/reusable-execute-release.yml \
+    | grep -oE '[0-9a-f]{40}')" ] || echo "release-gate pin out of sync with testsuite@v1"
 ```
 
-If the in-repo pin differs from the commit SHA `v1` resolves to, bump this workflow's pin to that SHA in the same PR (and every in-repo caller — see below). Do not trust the `# v1` version comment — verify the SHAs themselves. The testsuite `v1` tag auto-tracks `main` on every testsuite merge, so the managed tag advances independently of this pin; the pin is the SHA the gate actually executes and must be a deliberate, verified match.
+If this repo's SHA no longer equals testsuite `v1`, bump every in-repo pin (release gate, migration-test, upgrade-test) to the new `v1` SHA in the same PR. Do not trust the `# v1 (matches ...)` comment — verify the SHAs themselves. The testsuite `v1` tag auto-tracks `main` on every testsuite merge, so the managed tag advances independently of these pins; the pins are the SHAs the workflows actually execute and must be deliberate, verified matches.
 
 Every in-repo caller of testsuite `e2e.yml` (`reusable-execute-release.yml`, `migration-test.yml`, `upgrade-test.yml`) uses the same SHA and the same `# v1` version comment. Renovate reads the version comment as the tracked ref, so a caller with a different comment (e.g. `# main`) is updated on a separate track — or not at all — and drifts from the release gate. When bumping the pin, update all callers in the same PR.
 
@@ -413,7 +416,7 @@ Use this skill when:
 - Integrating a consumer repository with `reusable-build.yml` (Path 1 consumer integration).
 - Configuring JSON array inputs for matrix builds, architectures, or flavor lists.
 - Hardening permissions on reusable workflow caller jobs and step definitions.
-- Aligning testsuite e2e pins between `reusable-execute-release.yml` and consumer repos.
+- Aligning testsuite e2e pins between the in-repo release gate, `migration-test.yml`, and `upgrade-test.yml` against testsuite's live `v1` tag (bluefin's `run-testsuite.yml` uses the same `v1` floating ref, so it is implicitly aligned).
 
 ## When NOT to Use
 
@@ -428,7 +431,7 @@ Do not use this skill to:
 2. **Apply permissions hardening**: Set top-level `permissions: {}` and grant minimum required permissions on each individual job.
 3. **Use self-repository syntax**: Reference internal actions using `$/bootc-build/<name>` rather than hardcoded repo refs.
 4. **Preserve multi-arch digest shapes**: Ensure build jobs emit immutable image digests rather than mutable tags.
-5. **Verify pins across repos**: Ensure external pins (like testsuite e2e) match the caller repos exactly.
+5. **Verify pins across repos**: Ensure external pins (like testsuite e2e) match the SHA testsuite's `v1` tag points at right now — that is what bluefin's `run-testsuite.yml` resolves at PR time (it calls `e2e.yml@v1`). The verification path is documented under [Testsuite e2e pin](#testsuite-e2e-pin--keep-aligned-with-bluefins-run-testsuiteyml).
 6. **Validate with actionlint**: Run `actionlint` locally before submitting PRs.
 
 ## Common Rationalizations
@@ -444,7 +447,7 @@ Do not use this skill to:
 - Top-level workflow permissions granting write access globally across all jobs.
 - Passing bare unvalidated JSON strings into matrix dimensions without decoding.
 - Resolving image digests multiple times across gates instead of carrying a single resolved digest.
-- Mismatched `projectbluefin/testsuite` e2e pins between the release gate and consuming repos.
+- Mismatched `projectbluefin/testsuite` e2e pins between the in-repo release gate, `migration-test.yml`, and `upgrade-test.yml` — they must all equal the SHA testsuite's `v1` tag points at right now. (bluefin's `run-testsuite.yml` uses the same `v1` floating ref, so it is implicitly aligned.)
 
 ## Verification
 
