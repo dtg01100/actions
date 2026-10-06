@@ -20,6 +20,8 @@ on:
       - ".github/workflows/factory-health.yml"
       - ".github/workflows/ghcr-cleanup.yml"
       - ".github/workflows/factory-health.yml"
+      - ".github/workflows/migration-test.yml"
+      - ".github/workflows/upgrade-test.yml"
       - ".github/workflows/reusable-build.yml"
       - ".github/workflows/reusable-execute-release.yml"
       - ".github/workflows/reusable-pkg-cadence.yml"
