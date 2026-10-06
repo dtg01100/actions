@@ -376,20 +376,21 @@ Promotes one or more OCI variants (e.g. `:testing` → `:stable`) for bootc imag
 
 ### Testsuite e2e pin — keep aligned with bluefin's `run-testsuite.yml`
 
-The `release-gate` job calls `projectbluefin/testsuite/.github/workflows/e2e.yml@<SHA> # v1`. This pin **must match the SHA in `projectbluefin/bluefin/.github/workflows/run-testsuite.yml` exactly.** The two workflows execute the same testsuite e2e code — bluefin at PR time, the release gate at promotion time. A drift between them means the gate and bluefin CI can disagree on the same image.
+The `release-gate` job calls `projectbluefin/testsuite/.github/workflows/e2e.yml@<SHA> # v1`. bluefin's `run-testsuite.yml` does **not** pin a SHA — it calls the same workflow with the floating `e2e.yml@v1` managed tag. This repo's pin must therefore match the SHA that bluefin's `@v1` tag currently resolves to. The two workflows execute the same testsuite e2e code — bluefin at PR time, the release gate at promotion time. A drift between them means the gate and bluefin CI can disagree on the same image.
 
-To verify alignment before merging a change to this workflow:
+To verify alignment before merging a change to this workflow, resolve bluefin's `@v1` tag to the SHA it points at and confirm the in-repo pins match that SHA:
 
 ```bash
 # The pins in this repo (release gate, migration-test, upgrade-test) — all must be one SHA:
 grep -n 'testsuite.*e2e.yml@' .github/workflows/*.yml
 
-# The pin bluefin uses (the source of truth for the managed @v1 tag):
-gh api repos/projectbluefin/bluefin/contents/.github/workflows/run-testsuite.yml --jq .content \
-  | base64 -d | grep 'testsuite.*e2e.yml@'
+# What bluefin's floating @v1 tag actually resolves to (the source of truth).
+# Lightweight tag: one `refs/tags/v1` line with the commit SHA.
+# Annotated tag: also prints `refs/tags/v1^{}` — use that peeled commit SHA.
+git ls-remote --tags https://github.com/projectbluefin/testsuite 'v1*'
 ```
 
-If they differ, bump this workflow's pin to bluefin's SHA in the same PR. Do not trust the `# v1 (matches ...)` comment — verify the SHAs themselves. The testsuite `v1` tag auto-tracks `main` on every testsuite merge, so the managed tag advances independently of this pin; the pin is the SHA the gate actually executes and must be a deliberate, verified match.
+If the in-repo pin differs from the commit SHA `v1` resolves to, bump this workflow's pin to that SHA in the same PR (and every in-repo caller — see below). Do not trust the `# v1` version comment — verify the SHAs themselves. The testsuite `v1` tag auto-tracks `main` on every testsuite merge, so the managed tag advances independently of this pin; the pin is the SHA the gate actually executes and must be a deliberate, verified match.
 
 Every in-repo caller of testsuite `e2e.yml` (`reusable-execute-release.yml`, `migration-test.yml`, `upgrade-test.yml`) uses the same SHA and the same `# v1` version comment. Renovate reads the version comment as the tracked ref, so a caller with a different comment (e.g. `# main`) is updated on a separate track — or not at all — and drifts from the release gate. When bumping the pin, update all callers in the same PR.
 
